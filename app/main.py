@@ -18,32 +18,46 @@ from app.utils.logging_config import configure_logging
 
 
 def _render_analysis(analysis: dict[str, object]) -> None:
-    st.subheader("Resume Summary")
+    st.subheader("ATS Summary")
     st.write(analysis["summary"])
+    st.metric("Overall ATS score", f"{analysis['overall_ats_score']}/100")
 
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Technical Skills")
-        st.write(", ".join(analysis["technical_skills"]))
-        st.subheader("Soft Skills")
-        st.write(", ".join(analysis["soft_skills"]))
-    with right:
-        st.subheader("Experience Assessment")
-        st.write(analysis["experience_assessment"])
-
-    st.subheader("Job Recommendations")
-    for recommendation in analysis["job_recommendations"]:
-        st.markdown(
-            f"**{recommendation['title']}** — {recommendation['fit_reason']}"
-        )
-
-    for heading, key in (
-        ("Potential Missing Skills", "missing_skills"),
-        ("Learning Suggestions", "learning_suggestions"),
-        ("Resume Improvements", "resume_improvements"),
+    st.subheader("Scoring Breakdown")
+    score_columns = st.columns(3)
+    for column, (label, score) in zip(
+        score_columns, analysis["scoring_breakdown"].items()
     ):
-        st.subheader(heading)
-        st.markdown("\n".join(f"- {item}" for item in analysis[key]))
+        column.metric(label.replace("_", " ").title(), f"{score}/100")
+
+    st.subheader("Keyword Analysis")
+    keyword_columns = st.columns(3)
+    for column, (label, key) in zip(
+        keyword_columns,
+        (
+            ("Matched Keywords", "matched_keywords"),
+            ("Missing Keywords", "missing_keywords"),
+            ("Critical Skills Gaps", "critical_skills_gap"),
+        ),
+    ):
+        with column:
+            st.markdown(f"**{label}**")
+            values = analysis["keyword_analysis"][key]
+            st.markdown("\n".join(f"- {item}" for item in values) or "None identified.")
+
+    st.subheader("Bullet Improvements")
+    for bullet in analysis["bullet_improvements"]:
+        with st.container(border=True):
+            st.markdown(f"**Original:** {bullet['original_bullet']}")
+            st.markdown(f"**Suggested:** {bullet['suggested_bullet']}")
+            st.caption(bullet["reasoning"])
+
+    st.subheader("Actionable Recommendations")
+    st.markdown(
+        "\n".join(
+            f"- {item}" for item in analysis["actionable_recommendations"]
+        )
+        or "No additional recommendations."
+    )
 
     report_json = json.dumps(analysis, indent=2, ensure_ascii=False)
     st.download_button(
@@ -63,10 +77,7 @@ def main() -> None:
 
     st.set_page_config(page_title="AI Resume Analyzer", page_icon="📄")
     st.title("AI Resume Analyzer")
-    st.write(
-        "Get practical feedback on your resume, relevant roles, and skills to "
-        "build next."
-    )
+    st.write("Get an ATS-focused resume review and identify practical next steps.")
     st.info(
         "Your resume is sent to the configured AI provider for analysis. "
         "It is not saved by this app unless you choose to save the generated "
@@ -80,6 +91,12 @@ def main() -> None:
             max_chars=settings.max_resume_chars,
             placeholder="Paste resume content here...",
         )
+        job_description = st.text_area(
+            "Job description (optional)",
+            height=180,
+            max_chars=settings.max_resume_chars,
+            placeholder="Paste a target job description for a tailored keyword match...",
+        )
         save_report = st.checkbox(
             "Save the generated report on this device (the report may contain "
             "personal information).",
@@ -89,7 +106,7 @@ def main() -> None:
 
     if submitted:
         try:
-            analysis = ResumeAnalyzer(settings).analyze(resume_text)
+            analysis = ResumeAnalyzer(settings).analyze(resume_text, job_description)
             st.session_state["latest_analysis"] = analysis
             if save_report:
                 repository.initialize()

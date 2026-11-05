@@ -1,15 +1,16 @@
 # AI Resume Analyzer
 
-A Streamlit application that analyzes pasted resume text and returns a summary,
-skills analysis, experience assessment, job recommendations, potential skill
-gaps, learning suggestions, and resume improvements.
+A Streamlit application that evaluates pasted resume text against an optional
+job description and returns an ATS score, keyword analysis, truthful bullet
+improvements, and actionable recommendations.
 
 ## Features
 
 - Resume analysis using the OpenAI API
-- Technical and soft skills extraction
-- Role recommendations grounded in the resume
-- Potential missing skills and actionable learning ideas
+- ATS score with keyword, experience relevance, and formatting breakdown
+- Matched keywords, missing keywords, and critical skill gaps
+- Bullet rewrites that do not invent candidate experience or metrics
+- General resume audit when no job description is supplied
 - Downloadable JSON report
 - Optional local report history stored in SQLite
 - Input validation and deterministic tests with a mocked AI client
@@ -32,6 +33,17 @@ off by default; saved report text can still contain personal information.
 ## Installation
 
 Python 3.10 or later is recommended.
+
+Run the setup commands from the repository root (the `resume-analyser` folder
+containing `requirements.txt`). If you have not cloned the repository yet:
+
+```bash
+git clone https://github.com/pavankumargp6/resume-analyser.git
+cd resume-analyser
+```
+
+If you already cloned it, change into that folder first. For example, from
+`C:\Users\pavan`, run `Set-Location .\resume-analyser` in PowerShell.
 
 ### Windows (PowerShell)
 
@@ -70,9 +82,11 @@ API keys or real resumes.
 python -m streamlit run app/main.py
 ```
 
-Paste resume text and select **Analyze resume**. To save a report locally, opt
-in using the checkbox before submitting. Use the saved reports panel to review
-or delete saved reports.
+Paste resume text and, optionally, a target job description before selecting
+**Analyze resume**. Without a job description, the app performs a general
+technical resume audit. To save a report locally, opt in using the checkbox
+before submitting. Use the saved reports panel to review or delete saved
+reports.
 
 ## Run tests
 

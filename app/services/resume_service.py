@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 from typing import Any, TypedDict
 
 from openai import APIError, OpenAI
@@ -12,24 +13,39 @@ from app.prompts.resume_prompt import SYSTEM_PROMPT, build_user_prompt
 logger = logging.getLogger(__name__)
 
 
-class JobRecommendation(TypedDict):
-    """A suggested role and its resume-based rationale."""
+class ScoringBreakdown(TypedDict):
+    """ATS score components."""
 
-    title: str
-    fit_reason: str
+    keyword_match_score: int | float
+    experience_relevance_score: int | float
+    formatting_score: int | float
+
+
+class KeywordAnalysis(TypedDict):
+    """Keywords identified from the resume and job description."""
+
+    matched_keywords: list[str]
+    missing_keywords: list[str]
+    critical_skills_gap: list[str]
+
+
+class BulletImprovement(TypedDict):
+    """A resume bullet suggestion that preserves candidate-provided facts."""
+
+    original_bullet: str
+    suggested_bullet: str
+    reasoning: str
 
 
 class ResumeAnalysis(TypedDict):
     """Validated shape of the generated analysis."""
 
+    overall_ats_score: int | float
     summary: str
-    technical_skills: list[str]
-    soft_skills: list[str]
-    experience_assessment: str
-    job_recommendations: list[JobRecommendation]
-    missing_skills: list[str]
-    learning_suggestions: list[str]
-    resume_improvements: list[str]
+    scoring_breakdown: ScoringBreakdown
+    keyword_analysis: KeywordAnalysis
+    bullet_improvements: list[BulletImprovement]
+    actionable_recommendations: list[str]
 
 
 class ResumeValidationError(ValueError):
@@ -47,9 +63,12 @@ class ResumeAnalyzer:
         self.settings = settings
         self._client = client
 
-    def analyze(self, resume_text: str) -> ResumeAnalysis:
+    def analyze(
+        self, resume_text: str, job_description: str = ""
+    ) -> ResumeAnalysis:
         """Analyze resume text and return a validated result."""
         self._validate_resume(resume_text)
+        self._validate_job_description(job_description)
         if self._client is None:
             api_key = self.settings.require_api_key()
             self._client = OpenAI(
@@ -62,7 +81,10 @@ class ResumeAnalyzer:
                 model=self.settings.openai_model,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": build_user_prompt(resume_text)},
+                    {
+                        "role": "user",
+                        "content": build_user_prompt(resume_text, job_description),
+                    },
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.2,
@@ -94,57 +116,111 @@ class ResumeAnalyzer:
                 "characters or fewer."
             )
 
+    def _validate_job_description(self, job_description: str) -> None:
+        if not isinstance(job_description, str):
+            raise ResumeValidationError("Job description must be text.")
+        if len(job_description) > self.settings.max_resume_chars:
+            raise ResumeValidationError(
+                f"Job description must be {self.settings.max_resume_chars:,} "
+                "characters or fewer."
+            )
+
     @staticmethod
     def _validate_analysis(payload: Any) -> ResumeAnalysis:
         if not isinstance(payload, dict):
             raise ValueError("Analysis must be a JSON object.")
 
-        string_fields = ("summary", "experience_assessment")
-        list_fields = (
-            "technical_skills",
-            "soft_skills",
-            "missing_skills",
-            "learning_suggestions",
-            "resume_improvements",
+        overall_score = ResumeAnalyzer._validate_score(
+            payload.get("overall_ats_score"), "overall_ats_score"
         )
-        for field in string_fields:
-            if not isinstance(payload.get(field), str) or not payload[field].strip():
-                raise ValueError(f"{field} must be a non-empty string.")
-        for field in list_fields:
-            values = payload.get(field)
-            if not isinstance(values, list) or not all(
-                isinstance(value, str) and value.strip() for value in values
-            ):
-                raise ValueError(f"{field} must be a list of non-empty strings.")
-
-        recommendations = payload.get("job_recommendations")
-        if not isinstance(recommendations, list):
-            raise ValueError("job_recommendations must be a list.")
-        validated_recommendations: list[JobRecommendation] = []
-        for item in recommendations:
-            if (
-                not isinstance(item, dict)
-                or not isinstance(item.get("title"), str)
-                or not item["title"].strip()
-                or not isinstance(item.get("fit_reason"), str)
-                or not item["fit_reason"].strip()
-            ):
-                raise ValueError("Each job recommendation needs a title and fit_reason.")
-            validated_recommendations.append(
-                {"title": item["title"].strip(), "fit_reason": item["fit_reason"].strip()}
-            )
-
-        return {
-            "summary": payload["summary"].strip(),
-            "technical_skills": [value.strip() for value in payload["technical_skills"]],
-            "soft_skills": [value.strip() for value in payload["soft_skills"]],
-            "experience_assessment": payload["experience_assessment"].strip(),
-            "job_recommendations": validated_recommendations,
-            "missing_skills": [value.strip() for value in payload["missing_skills"]],
-            "learning_suggestions": [
-                value.strip() for value in payload["learning_suggestions"]
-            ],
-            "resume_improvements": [
-                value.strip() for value in payload["resume_improvements"]
-            ],
+        summary = ResumeAnalyzer._validate_non_empty_string(
+            payload.get("summary"), "summary"
+        )
+        breakdown = payload.get("scoring_breakdown")
+        if not isinstance(breakdown, dict):
+            raise ValueError("scoring_breakdown must be an object.")
+        validated_breakdown: ScoringBreakdown = {
+            "keyword_match_score": ResumeAnalyzer._validate_score(
+                breakdown.get("keyword_match_score"),
+                "keyword_match_score",
+            ),
+            "experience_relevance_score": ResumeAnalyzer._validate_score(
+                breakdown.get("experience_relevance_score"),
+                "experience_relevance_score",
+            ),
+            "formatting_score": ResumeAnalyzer._validate_score(
+                breakdown.get("formatting_score"), "formatting_score"
+            ),
         }
+
+        keyword_analysis = payload.get("keyword_analysis")
+        if not isinstance(keyword_analysis, dict):
+            raise ValueError("keyword_analysis must be an object.")
+        validated_keywords: KeywordAnalysis = {
+            "matched_keywords": ResumeAnalyzer._validate_string_list(
+                keyword_analysis.get("matched_keywords"), "matched_keywords"
+            ),
+            "missing_keywords": ResumeAnalyzer._validate_string_list(
+                keyword_analysis.get("missing_keywords"), "missing_keywords"
+            ),
+            "critical_skills_gap": ResumeAnalyzer._validate_string_list(
+                keyword_analysis.get("critical_skills_gap"), "critical_skills_gap"
+            ),
+        }
+
+        bullets = payload.get("bullet_improvements")
+        if not isinstance(bullets, list):
+            raise ValueError("bullet_improvements must be a list.")
+        validated_bullets: list[BulletImprovement] = []
+        for item in bullets:
+            if not isinstance(item, dict):
+                raise ValueError("Each bullet improvement must be an object.")
+            validated_bullets.append(
+                {
+                    "original_bullet": ResumeAnalyzer._validate_non_empty_string(
+                        item.get("original_bullet"), "original_bullet"
+                    ),
+                    "suggested_bullet": ResumeAnalyzer._validate_non_empty_string(
+                        item.get("suggested_bullet"), "suggested_bullet"
+                    ),
+                    "reasoning": ResumeAnalyzer._validate_non_empty_string(
+                        item.get("reasoning"), "reasoning"
+                    ),
+                }
+            )
+        return {
+            "overall_ats_score": overall_score,
+            "summary": summary,
+            "scoring_breakdown": validated_breakdown,
+            "keyword_analysis": validated_keywords,
+            "bullet_improvements": validated_bullets,
+            "actionable_recommendations": ResumeAnalyzer._validate_string_list(
+                payload.get("actionable_recommendations"),
+                "actionable_recommendations",
+            ),
+        }
+
+    @staticmethod
+    def _validate_score(value: Any, field: str) -> int | float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 <= value <= 100
+        ):
+            raise ValueError(f"{field} must be a number from 0 to 100.")
+        return value
+
+    @staticmethod
+    def _validate_non_empty_string(value: Any, field: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field} must be a non-empty string.")
+        return value.strip()
+
+    @staticmethod
+    def _validate_string_list(value: Any, field: str) -> list[str]:
+        if not isinstance(value, list):
+            raise ValueError(f"{field} must be a list.")
+        return [
+            ResumeAnalyzer._validate_non_empty_string(item, field) for item in value
+        ]
